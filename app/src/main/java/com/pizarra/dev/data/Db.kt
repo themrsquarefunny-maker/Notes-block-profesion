@@ -3,6 +3,7 @@ package com.pizarra.dev.data
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -26,7 +27,7 @@ data class BlockEntity(
     val w: Int,             // ancho de la tarjeta
     val text: String = "",
     val code: Boolean = false,
-    val title: String = ""  // solo usado en notas (tipo 2): título editable de la tarjeta
+    @ColumnInfo(defaultValue = "''") val title: String = ""  // solo usado en notas (tipo 2): título editable de la tarjeta
 )
 
 /** Conexión entre dos anclajes. side: 0 arriba, 1 derecha, 2 abajo, 3 izquierda. */

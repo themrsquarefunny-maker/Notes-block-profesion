@@ -86,7 +86,15 @@ class BlockView(
 
     private val rad = dpf(10f)
     private val body = FrameLayout(ctx)
-    private val vScroll = ScrollView(ctx)
+    private val vScroll = object : ScrollView(ctx) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val limit = dp(380)
+            val mode = View.MeasureSpec.getMode(heightMeasureSpec)
+            val size = View.MeasureSpec.getSize(heightMeasureSpec)
+            val capped = if (mode == View.MeasureSpec.UNSPECIFIED) limit else min(size, limit)
+            super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(capped, View.MeasureSpec.AT_MOST))
+        }
+    }
     private val hScroll = HorizontalScrollView(ctx)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dpf(1.5f) }
@@ -175,7 +183,7 @@ class BlockView(
                 hint = "Título de la nota…"
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 imeOptions = EditorInfo.IME_ACTION_NEXT
-                isSingleLine = true
+                setSingleLine(true)
                 maxLines = 1
                 setText(title)
                 setOnFocusChangeListener { _, f -> this@BlockView.invalidate(); if (f) host?.onFocus(this@BlockView) }
@@ -358,7 +366,6 @@ class BlockView(
     /** Alterna entre modo texto (word wrap) y modo script (monoespaciado, sin wrap, scroll horizontal). */
     private fun applyMode() {
         val isCode = type == NOTE && code
-        if (type == NOTE) vScroll.maxHeight = dp(380)   // interfaz completa con altura máxima en ambos modos
         val selStart = try { edit.selectionStart } catch (_: Exception) { -1 }
         val selEnd = try { edit.selectionEnd } catch (_: Exception) { -1 }
         (edit.parent as? ViewGroup)?.removeView(edit)
@@ -395,7 +402,6 @@ class BlockView(
                 // Nota expandida: cuerpo con scroll vertical y altura máxima (interfaz completa)
                 vScroll.isFillViewport = true
                 vScroll.isVerticalScrollBarEnabled = false
-                vScroll.maxHeight = dp(380)
                 vScroll.addView(edit, FrameLayout.LayoutParams(MATCH, WRAP))
                 body.addView(vScroll, FrameLayout.LayoutParams(MATCH, WRAP))
             } else {
