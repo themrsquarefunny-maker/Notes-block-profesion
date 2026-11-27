@@ -93,6 +93,7 @@ class BoardView(ctx: Context, private val repo: Repo) : ViewGroup(ctx), BlockVie
 
     fun load() {
         repo.load { bl, ed ->
+            if (!isAttachedToWindow) return@load
             for (b in bl) createView(b)
             edges.addAll(ed)
             applyAll()
@@ -108,6 +109,7 @@ class BoardView(ctx: Context, private val repo: Repo) : ViewGroup(ctx), BlockVie
         // para que el usuario escriba el título y el cuerpo de inmediato.
         val e = BlockEntity(type = type, x = x, y = y, w = w, code = false)
         repo.addBlock(e) { id ->
+            if (!isAttachedToWindow) return@addBlock
             val v = createView(e.copy(id = id), expanded = type == BlockView.NOTE)
             applyAll()
             v.bringToFront()
@@ -120,7 +122,7 @@ class BoardView(ctx: Context, private val repo: Repo) : ViewGroup(ctx), BlockVie
     // ---------------- modelo ----------------
 
     private fun createView(e: BlockEntity, expanded: Boolean = false): BlockView {
-        val v = BlockView(context, e.id, e.type, e.x, e.y, e.w, e.text, e.code, e.title, expanded)
+        val v = BlockView(context, e.id, e.type, e.x, e.y, e.w, e.text, e.code, e.title, expanded, e.script, e.hasScript)
         v.host = this
         v.pivotX = 0f
         v.pivotY = 0f
@@ -177,6 +179,8 @@ class BoardView(ctx: Context, private val repo: Repo) : ViewGroup(ctx), BlockVie
     override fun onTitle(b: BlockView, t: String) { repo.title(b.bid, t) }
 
     override fun onCode(b: BlockView) { repo.code(b.bid, b.code) }
+
+    override fun onScript(b: BlockView, script: String, has: Boolean) { repo.script(b.bid, script, has) }
 
     override fun onExpand(b: BlockView, expanded: Boolean) {
         b.bringToFront()

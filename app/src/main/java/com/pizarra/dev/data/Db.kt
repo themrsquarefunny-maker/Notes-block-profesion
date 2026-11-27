@@ -27,7 +27,9 @@ data class BlockEntity(
     val w: Int,             // ancho de la tarjeta
     val text: String = "",
     val code: Boolean = false,
-    @ColumnInfo(defaultValue = "''") val title: String = ""  // solo usado en notas (tipo 2): título editable de la tarjeta
+    @ColumnInfo(defaultValue = "''") val title: String = "",
+    @ColumnInfo(defaultValue = "''") val script: String = "",
+    @ColumnInfo(defaultValue = "0") val hasScript: Boolean = false
 )
 
 /** Conexión entre dos anclajes. side: 0 arriba, 1 derecha, 2 abajo, 3 izquierda. */
@@ -57,38 +59,42 @@ interface BoardDao {
     @Query("UPDATE blocks SET w = :w WHERE id = :id") fun resize(id: Long, w: Int)
     @Query("UPDATE blocks SET text = :t WHERE id = :id") fun setText(id: Long, t: String)
     @Query("UPDATE blocks SET title = :t WHERE id = :id") fun setTitle(id: Long, t: String)
+    @Query("UPDATE blocks SET script = :s, hasScript = :has WHERE id = :id") fun setScript(id: Long, s: String, has: Boolean)
     @Query("UPDATE blocks SET code = :c WHERE id = :id") fun setCode(id: Long, c: Boolean)
+    @Query("DELETE FROM blocks") fun deleteAllBlocks()
     @Query("DELETE FROM blocks WHERE id = :id") fun deleteBlock(id: Long)   // borra sus conexiones en cascada
     @Query("DELETE FROM edges WHERE id = :id") fun deleteEdge(id: Long)
 }
 
-@Database(entities = [BlockEntity::class, EdgeEntity::class], version = 2, exportSchema = false)
+@Database(entities = [BlockEntity::class, EdgeEntity::class], version = 3, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): BoardDao
 
     companion object {
-        @Volatile private var inst: AppDb? = null
-
-        /** v1 -> v2: añade la columna `title` para el título de las notas. */
+        private val instances = mutableMapOf<String, AppDb>()
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE blocks ADD COLUMN title TEXT NOT NULL DEFAULT ''")
             }
         }
-
-        fun get(c: Context): AppDb = inst ?: synchronized(this) {
-            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "pizarra.db")
-                .addMigrations(MIGRATION_1_2)
-                .fallbackToDestructiveMigrationOnDowngrade()
-                .build().also { inst = it }
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE blocks ADD COLUMN script TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE blocks ADD COLUMN hasScript INTEGER NOT NULL DEFAULT 0")
+            }
         }
+        @Synchronized fun get(c: Context, name: String): AppDb = instances.getOrPut(name) {
+            Room.databaseBuilder(c.applicationContext, AppDb::class.java, name)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        }
+
     }
 }
 
 /** Acceso a datos en un único hilo de fondo (sin corrutinas). Los callbacks vuelven al hilo principal. */
-class Repo(ctx: Context) {
-    private val dao = AppDb.get(ctx).dao()
-    private val io = Executors.newSingleThreadExecutor()
+class Repo(ctx: Context, name: String = "pizarra.db") {
+    private val dao = AppDb.get(ctx, name).dao()
+    companion object { private val io = Executors.newSingleThreadExecutor() }
     private val ui = Handler(Looper.getMainLooper())
 
     fun load(done: (List<BlockEntity>, List<EdgeEntity>) -> Unit) {
@@ -111,7 +117,9 @@ class Repo(ctx: Context) {
     fun resize(id: Long, w: Int) = io.execute { dao.resize(id, w) }
     fun text(id: Long, t: String) = io.execute { dao.setText(id, t) }
     fun title(id: Long, t: String) = io.execute { dao.setTitle(id, t) }
+    fun script(id: Long, s: String, has: Boolean) = io.execute { dao.setScript(id, s, has) }
     fun code(id: Long, c: Boolean) = io.execute { dao.setCode(id, c) }
+    fun clear() = io.execute { dao.deleteAllBlocks() }
     fun delBlock(id: Long) = io.execute { dao.deleteBlock(id) }
     fun delEdge(id: Long) = io.execute { dao.deleteEdge(id) }
 }

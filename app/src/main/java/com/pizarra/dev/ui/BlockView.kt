@@ -1,5 +1,8 @@
 package com.pizarra.dev.ui
 
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -23,6 +26,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.math.max
 import kotlin.math.min
 
@@ -50,7 +54,9 @@ class BlockView(
     text: String,
     var code: Boolean,
     title: String = "",
-    expanded: Boolean = false
+    expanded: Boolean = false,
+    script: String = "",
+    hasScript: Boolean = false
 ) : FrameLayout(ctx) {
 
     interface Host {
@@ -61,6 +67,7 @@ class BlockView(
         fun onDelete(b: BlockView)
         fun onText(b: BlockView, t: String)
         fun onTitle(b: BlockView, t: String)
+        fun onScript(b: BlockView, script: String, has: Boolean)
         fun onCode(b: BlockView)
         fun onFocus(b: BlockView)
         fun onExpand(b: BlockView, expanded: Boolean)
@@ -106,6 +113,10 @@ class BlockView(
     private var nl = -1
     private var bodyDirty = false
     private var titleDirty = false
+    private var scriptDirty = false
+    private var hasScript = hasScript
+    private val scriptEdit = EditText(ctx)
+    private val scriptBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     private var linking = false
     private var lrx = 0f
     private var lry = 0f
@@ -113,7 +124,8 @@ class BlockView(
     private val preview = TextView(ctx)
     private val expandedBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     private val btnTab = tv("TAB") { insertTab() }
-    private val btnScript = tv("+ Script") { toggleScript() }
+    private val btnScript = tv("+ Script") { addScript() }
+    private val btnFull = tv("Expandir completamente") { openFullEditor() }
     private val btnArrow = tv("▼") { toggleExpand() }
     private val btnDel = tv("×") { host?.onDelete(this) }
     private val grab = TextView(ctx)
@@ -213,9 +225,27 @@ class BlockView(
                 gravity = Gravity.CENTER_VERTICAL
             }
             toolbar.addView(btnScript, LinearLayout.LayoutParams(WRAP, dp(32)))
-            toolbar.addView(btnTab, LinearLayout.LayoutParams(WRAP, dp(32)))
+            toolbar.addView(btnFull, LinearLayout.LayoutParams(WRAP, dp(32)))
             expandedBox.addView(toolbar, LinearLayout.LayoutParams(MATCH, WRAP))
             expandedBox.addView(body, LinearLayout.LayoutParams(MATCH, WRAP))
+            val scriptHeader = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            scriptHeader.addView(tv("Script") {}, LinearLayout.LayoutParams(0, dp(36), 1f))
+            scriptHeader.addView(tv("Copiar") { copyScript() }, LinearLayout.LayoutParams(WRAP, dp(36)))
+            scriptBox.addView(scriptHeader)
+            scriptEdit.apply {
+                setText(script); hint = "Escribe tu script…"; setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM)
+                typeface = Typeface.MONOSPACE; textSize = 13f; minHeight = dp(90)
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(e: Editable) { scriptDirty = true; removeCallbacks(saveRun); postDelayed(saveRun, 700) }
+                })
+            }
+            scriptBox.addView(scriptEdit, LinearLayout.LayoutParams(MATCH, WRAP))
+            scriptBox.visibility = if (hasScript) View.VISIBLE else View.GONE
+            expandedBox.addView(scriptBox, LinearLayout.LayoutParams(MATCH, WRAP))
             col.addView(expandedBox, LinearLayout.LayoutParams(MATCH, WRAP))
         } else {
             col.addView(body, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -237,7 +267,7 @@ class BlockView(
                 if (code && k == KeyEvent.KEYCODE_TAB && ev.action == KeyEvent.ACTION_DOWN) { insertTab(); true } else false
             }
         }
-        if (type != NOTE) code = false
+        code = false // Los textos antiguos se conservan como texto normal.
         applyMode()
         applyExpanded()
         edit.addTextChangedListener(watcher)
@@ -355,12 +385,58 @@ class BlockView(
      * "+ Script" -> modo script; "Aa Texto" -> vuelve a modo normal.
      * Al principio todo bloque nace en modo normal (code = false).
      */
-    private fun toggleScript() {
-        if (type != NOTE) return
-        code = !code
-        applyMode()
-        host?.onCode(this)
-        edit.requestFocus()
+    private fun addScript() {
+        if (!hasScript) {
+            hasScript = true
+            scriptDirty = true
+            scriptBox.visibility = View.VISIBLE
+            btnScript.text = "Script añadido"
+            flush()
+        }
+        scriptEdit.requestFocus()
+        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(scriptEdit, 0)
+    }
+
+    private fun copyScript() {
+        (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+            .setPrimaryClip(ClipData.newPlainText("Script", scriptEdit.text.toString()))
+        Toast.makeText(context, "Script copiado", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openFullEditor() {
+        val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(12)); setBackgroundColor(Ui.SURFACE) }
+        fun field(hintText: String, initial: String, mono: Boolean, changed: (String) -> Unit): EditText {
+            return EditText(context).apply {
+                hint = hintText; setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM); setText(initial)
+                if (mono) typeface = Typeface.MONOSPACE
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(e: Editable) { changed(e.toString()) }
+                })
+            }
+        }
+        val fullTitle = field("Título", titleEdit.text.toString(), false) { if (titleEdit.text.toString() != it) titleEdit.setText(it) }
+        fullTitle.setSingleLine(true)
+        container.addView(fullTitle, LinearLayout.LayoutParams(MATCH, WRAP))
+        val fullBody = field("Escribe una nota…", edit.text.toString(), false) { if (edit.text.toString() != it) edit.setText(it) }
+        container.addView(fullBody, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        val scriptArea = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val fullScript = field("Escribe tu script…", scriptEdit.text.toString(), true) { if (scriptEdit.text.toString() != it) scriptEdit.setText(it) }
+        scriptArea.addView(tv("Copiar script") { copyScript() }, LinearLayout.LayoutParams(MATCH, dp(40)))
+        scriptArea.addView(fullScript, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        scriptArea.visibility = if (hasScript) View.VISIBLE else View.GONE
+        container.addView(tv("+ Agregar script") {
+            if (!hasScript) { hasScript = true; scriptDirty = true; scriptBox.visibility = View.VISIBLE; btnScript.text = "Script añadido"; flush() }
+            scriptArea.visibility = View.VISIBLE; fullScript.requestFocus()
+        }, LinearLayout.LayoutParams(MATCH, dp(40)))
+        container.addView(scriptArea, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        val dialog = AlertDialog.Builder(context).setTitle("Nota completa").setView(container).setPositiveButton("Listo") { _, _ -> flush() }.create()
+        dialog.setOnDismissListener { flush() }
+        dialog.setOnShowListener { dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.96f).toInt(), (resources.displayMetrics.heightPixels * 0.90f).toInt()) }
+        dialog.show()
     }
 
     /** Alterna entre modo texto (word wrap) y modo script (monoespaciado, sin wrap, scroll horizontal). */
@@ -411,8 +487,8 @@ class BlockView(
         edit.setTextColor(if (type == SUBTITLE) Ui.GREEN else Ui.TEXT)
         if (type == NOTE) {
             btnTab.visibility = if (isCode) View.VISIBLE else View.GONE
-            btnScript.text = if (isCode) "Aa Texto" else "+ Script"
-            btnScript.contentDescription = if (isCode) "Volver a modo normal" else "Agregar script (modo código)"
+            btnScript.text = if (hasScript) "Script añadido" else "+ Script"
+            btnScript.contentDescription = "Agregar espacio para script"
         }
         if (selStart >= 0 && selEnd >= 0) {
             try { edit.setSelection(selStart.coerceAtMost(edit.text.length), selEnd.coerceAtMost(edit.text.length)) } catch (_: Exception) {}
@@ -457,6 +533,10 @@ class BlockView(
             bodyDirty = false
             host?.onText(this, edit.text.toString())
         }
+        if (scriptDirty) {
+            scriptDirty = false
+            host?.onScript(this, scriptEdit.text.toString(), hasScript)
+        }
         if (titleDirty) {
             titleDirty = false
             host?.onTitle(this, titleEdit.text.toString())
@@ -465,7 +545,7 @@ class BlockView(
 
     /** true si título y cuerpo están vacíos (para decidir si borrar sin confirmar). */
     fun isBlank(): Boolean =
-        if (type == NOTE) titleEdit.text.isBlank() && edit.text.isBlank() else edit.text.isBlank()
+        if (type == NOTE) titleEdit.text.isBlank() && edit.text.isBlank() && scriptEdit.text.isBlank() else edit.text.isBlank()
 
     // ---- anclajes: 0 arriba, 1 derecha, 2 abajo, 3 izquierda ----
     private fun ax(side: Int): Float = when (side) { 1 -> (width - pad).toFloat(); 3 -> pad.toFloat(); else -> width / 2f }
