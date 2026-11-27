@@ -1,12 +1,14 @@
 package com.pizarra.dev.ui
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.InputType
 import android.text.Spanned
@@ -18,6 +20,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -40,9 +43,7 @@ import kotlin.math.min
  *  - Colapsado (por defecto al cargar): muestra título + vista previa del cuerpo (2 líneas).
  *  - Una flechita (▼/▲) en la cabecera expande/colapsa la interfaz completa de escritura
  *    (título + cuerpo editable con scroll y barra de herramientas).
- *  - Modo normal al principio. Solo si el usuario toca "+ Script" en la barra de la nota
- *    expandida, ESE bloque cambia a modo script (monoespaciado, sin wrap, TAB y auto-indent).
- *    Con "Aa Texto" vuelve a modo normal. El título nunca cambia de modo.
+ *  - El texto normal y el espacio opcional de script se guardan por separado.
  */
 class BlockView(
     ctx: Context,
@@ -228,23 +229,13 @@ class BlockView(
             toolbar.addView(btnFull, LinearLayout.LayoutParams(WRAP, dp(32)))
             expandedBox.addView(toolbar, LinearLayout.LayoutParams(MATCH, WRAP))
             expandedBox.addView(body, LinearLayout.LayoutParams(MATCH, WRAP))
-            val scriptHeader = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            scriptHeader.addView(tv("Script") {}, LinearLayout.LayoutParams(0, dp(36), 1f))
-            scriptHeader.addView(tv("Copiar") { copyScript() }, LinearLayout.LayoutParams(WRAP, dp(36)))
-            scriptBox.addView(scriptHeader)
-            scriptEdit.apply {
-                setText(script); hint = "Escribe tu script…"; setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM)
-                typeface = Typeface.MONOSPACE; textSize = 13f; minHeight = dp(90)
-                gravity = Gravity.TOP or Gravity.START
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
-                    override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
-                    override fun afterTextChanged(e: Editable) { scriptDirty = true; removeCallbacks(saveRun); postDelayed(saveRun, 700) }
-                })
-            }
-            scriptBox.addView(scriptEdit, LinearLayout.LayoutParams(MATCH, WRAP))
-            scriptBox.visibility = if (hasScript) View.VISIBLE else View.GONE
+            scriptEdit.setText(script)
+            scriptEdit.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(e: Editable) { scriptDirty = true; removeCallbacks(saveRun); postDelayed(saveRun, 700) }
+            })
+            renderScriptCard(scriptBox)
             expandedBox.addView(scriptBox, LinearLayout.LayoutParams(MATCH, WRAP))
             col.addView(expandedBox, LinearLayout.LayoutParams(MATCH, WRAP))
         } else {
@@ -378,23 +369,24 @@ class BlockView(
         imm.hideSoftInputFromWindow(windowToken, 0)
     }
 
-    // ---------------- modo normal / script ----------------
+    // ---------------- editor completo y tarjeta de script ----------------
 
-    /**
-     * Solo cambia el modo de ESTE bloque y solo desde su interfaz expandida:
-     * "+ Script" -> modo script; "Aa Texto" -> vuelve a modo normal.
-     * Al principio todo bloque nace en modo normal (code = false).
-     */
-    private fun addScript() {
+    private fun rounded(color: Int, stroke: Int = Ui.STROKE): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE; setColor(color); cornerRadius = dpf(14f); setStroke(dp(1), stroke)
+    }
+
+    private fun textAction(label: String, action: () -> Unit): TextView = TextView(context).apply {
+        text = label; textSize = 14f; setTextColor(Ui.ACCENT); gravity = Gravity.CENTER
+        setPadding(dp(10), 0, dp(10), 0); minHeight = dp(44)
+        setOnClickListener { action() }
+    }
+
+    private fun addScript(afterChange: () -> Unit = {}) {
         if (!hasScript) {
-            hasScript = true
-            scriptDirty = true
-            scriptBox.visibility = View.VISIBLE
-            btnScript.text = "Script añadido"
-            flush()
+            hasScript = true; scriptDirty = true; btnScript.text = "Script añadido"
+            renderScriptCard(scriptBox); flush(); afterChange()
         }
-        scriptEdit.requestFocus()
-        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(scriptEdit, 0)
+        openScriptEditor(afterChange)
     }
 
     private fun copyScript() {
@@ -403,40 +395,141 @@ class BlockView(
         Toast.makeText(context, "Script copiado", Toast.LENGTH_SHORT).show()
     }
 
-    private fun openFullEditor() {
-        val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(12)); setBackgroundColor(Ui.SURFACE) }
-        fun field(hintText: String, initial: String, mono: Boolean, changed: (String) -> Unit): EditText {
-            return EditText(context).apply {
-                hint = hintText; setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM); setText(initial)
-                if (mono) typeface = Typeface.MONOSPACE
-                gravity = Gravity.TOP or Gravity.START
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
-                    override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
-                    override fun afterTextChanged(e: Editable) { changed(e.toString()) }
-                })
-            }
+    private fun deleteScript(afterChange: () -> Unit) {
+        AlertDialog.Builder(context)
+            .setTitle("Eliminar script")
+            .setMessage("¿Eliminar este script? El texto de la nota no se modificará.")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Eliminar") { _, _ ->
+                hasScript = false; scriptEdit.setText(""); scriptDirty = true
+                btnScript.text = "+ Script"; renderScriptCard(scriptBox); flush(); afterChange()
+            }.show()
+    }
+
+    private fun renderScriptCard(box: LinearLayout, afterChange: () -> Unit = {}) {
+        box.removeAllViews()
+        box.visibility = if (hasScript) View.VISIBLE else View.GONE
+        if (!hasScript) return
+        box.orientation = LinearLayout.VERTICAL
+        box.background = rounded(Ui.CODE_BG)
+        box.setPadding(dp(12), dp(8), dp(12), dp(8))
+        val heading = TextView(context).apply {
+            text = "</>  SCRIPT"; textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Ui.GREEN); setPadding(dp(4), dp(5), dp(4), dp(4))
         }
-        val fullTitle = field("Título", titleEdit.text.toString(), false) { if (titleEdit.text.toString() != it) titleEdit.setText(it) }
-        fullTitle.setSingleLine(true)
-        container.addView(fullTitle, LinearLayout.LayoutParams(MATCH, WRAP))
-        val fullBody = field("Escribe una nota…", edit.text.toString(), false) { if (edit.text.toString() != it) edit.setText(it) }
-        container.addView(fullBody, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        val scriptArea = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-        val fullScript = field("Escribe tu script…", scriptEdit.text.toString(), true) { if (scriptEdit.text.toString() != it) scriptEdit.setText(it) }
-        scriptArea.addView(tv("Copiar script") { copyScript() }, LinearLayout.LayoutParams(MATCH, dp(40)))
-        scriptArea.addView(fullScript, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        scriptArea.visibility = if (hasScript) View.VISIBLE else View.GONE
-        container.addView(tv("+ Agregar script") {
-            if (!hasScript) { hasScript = true; scriptDirty = true; scriptBox.visibility = View.VISIBLE; btnScript.text = "Script añadido"; flush() }
-            scriptArea.visibility = View.VISIBLE; fullScript.requestFocus()
-        }, LinearLayout.LayoutParams(MATCH, dp(40)))
-        container.addView(scriptArea, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        val dialog = AlertDialog.Builder(context).setTitle("Nota completa").setView(container).setPositiveButton("Listo") { _, _ -> flush() }.create()
+        box.addView(heading, LinearLayout.LayoutParams(MATCH, WRAP))
+        val snippet = TextView(context).apply {
+            text = if (scriptEdit.text.isEmpty()) "Toca Ampliar para escribir tu script" else scriptEdit.text.toString()
+            setTextColor(if (scriptEdit.text.isEmpty()) Ui.DIM else Ui.TEXT)
+            typeface = Typeface.MONOSPACE; textSize = 13f
+            maxLines = 4; ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            setOnClickListener { openScriptEditor(afterChange) }
+        }
+        box.addView(snippet, LinearLayout.LayoutParams(MATCH, WRAP))
+        val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(textAction("Copiar") { copyScript() }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        actions.addView(textAction("Ampliar") { openScriptEditor(afterChange) }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        actions.addView(textAction("Eliminar") { deleteScript(afterChange) }.apply { setTextColor(0xFFFF8A80.toInt()) }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        box.addView(actions, LinearLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    private fun fullScreenDialog(content: View): Dialog {
+        val dialog = Dialog(context, android.R.style.Theme_Material_NoActionBar)
+        dialog.setContentView(content)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
         dialog.setOnDismissListener { flush() }
-        dialog.setOnShowListener { dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.96f).toInt(), (resources.displayMetrics.heightPixels * 0.90f).toInt()) }
+        return dialog
+    }
+
+    private fun openScriptEditor(afterChange: () -> Unit) {
+        val page = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BG) }
+        val bar = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(6), dp(8), dp(6)) }
+        page.addView(bar, LinearLayout.LayoutParams(MATCH, dp(60)))
+        val heading = TextView(context).apply { text = "Editor de script"; textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Ui.TEXT) }
+        lateinit var dialog: Dialog
+        bar.addView(textAction("←") { dialog.dismiss() }, LinearLayout.LayoutParams(dp(48), MATCH))
+        bar.addView(heading, LinearLayout.LayoutParams(0, WRAP, 1f))
+        bar.addView(textAction("Copiar") { copyScript() }, LinearLayout.LayoutParams(WRAP, MATCH))
+        bar.addView(textAction("Listo") { dialog.dismiss() }, LinearLayout.LayoutParams(WRAP, MATCH))
+        val editor = EditText(context).apply {
+            background = rounded(Ui.CODE_BG); setPadding(dp(18), dp(16), dp(18), dp(16))
+            setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM); hint = "Escribe tu script aquí…"
+            textSize = 15f; typeface = Typeface.MONOSPACE; gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(scriptEdit.text.toString())
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(e: Editable) { if (scriptEdit.text.toString() != e.toString()) scriptEdit.setText(e.toString()) }
+            })
+        }
+        page.addView(editor, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { setMargins(dp(16), dp(8), dp(16), dp(20)) })
+        dialog = fullScreenDialog(page)
+        dialog.setOnDismissListener { flush(); renderScriptCard(scriptBox); afterChange() }
         dialog.show()
+        dialog.window?.setLayout(MATCH, MATCH)
+    }
+
+    private fun openFullEditor() {
+        hideKeyboard()
+        val page = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Ui.BG) }
+        val bar = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(6), dp(8), dp(6)) }
+        page.addView(bar, LinearLayout.LayoutParams(MATCH, dp(60)))
+        lateinit var dialog: Dialog
+        bar.addView(textAction("←") { dialog.dismiss() }.apply { contentDescription = "Volver al lienzo" }, LinearLayout.LayoutParams(dp(48), MATCH))
+        bar.addView(TextView(context).apply { text = "NOTA"; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Ui.DIM); letterSpacing = 0.12f }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        bar.addView(textAction("Listo") { dialog.dismiss() }, LinearLayout.LayoutParams(WRAP, MATCH))
+        val scroll = ScrollView(context).apply { isFillViewport = true; isVerticalScrollBarEnabled = true }
+        val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(12), dp(24), dp(36)) }
+        scroll.addView(content, FrameLayout.LayoutParams(MATCH, WRAP))
+        page.addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        val fullTitle = EditText(context).apply {
+            background = null; setPadding(0, dp(8), 0, dp(8)); hint = "Título"; textSize = 30f
+            setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM); typeface = Typeface.DEFAULT_BOLD
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setSingleLine(true); setText(titleEdit.text.toString())
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(e: Editable) { if (titleEdit.text.toString() != e.toString()) titleEdit.setText(e.toString()) }
+            })
+        }
+        content.addView(fullTitle, LinearLayout.LayoutParams(MATCH, WRAP))
+        val count = TextView(context).apply { textSize = 13f; setTextColor(Ui.DIM); setPadding(0, dp(4), 0, dp(24)) }
+        content.addView(count, LinearLayout.LayoutParams(MATCH, WRAP))
+        val fullBody = EditText(context).apply {
+            background = null; setPadding(0, dp(8), 0, dp(16)); hint = "Empieza a escribir…"; textSize = 17f
+            setTextColor(Ui.TEXT); setHintTextColor(Ui.DIM); gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minHeight = dp(180); setText(edit.text.toString())
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, st: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(e: Editable) {
+                    count.text = "${e.length} caracteres  ·  Guardado automático"
+                    if (edit.text.toString() != e.toString()) edit.setText(e.toString())
+                }
+            })
+        }
+        count.text = "${edit.text.length} caracteres  ·  Guardado automático"
+        content.addView(fullBody, LinearLayout.LayoutParams(MATCH, WRAP))
+        val card = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val addButton = textAction("＋  Agregar script") {}
+        lateinit var refreshCard: () -> Unit
+        refreshCard = {
+            renderScriptCard(card) { refreshCard() }
+            addButton.visibility = if (hasScript) View.GONE else View.VISIBLE
+        }
+        addButton.background = rounded(Ui.SURFACE)
+        addButton.setOnClickListener { addScript { refreshCard() } }
+        content.addView(addButton, LinearLayout.LayoutParams(MATCH, dp(48)).apply { setMargins(0, dp(12), 0, dp(12)) })
+        content.addView(card, LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
+        refreshCard()
+        dialog = fullScreenDialog(page)
+        dialog.show()
+        dialog.window?.setLayout(MATCH, MATCH)
     }
 
     /** Alterna entre modo texto (word wrap) y modo script (monoespaciado, sin wrap, scroll horizontal). */
